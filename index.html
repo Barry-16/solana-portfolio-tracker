@@ -100,8 +100,9 @@ const store = {
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
 };
 
-let wallets  = store.get('wallets', []);
+let wallets  = store.get('wallets', []).map(w => Object.assign({}, w, { address: cleanAddr(w.address) }));
 let settings = Object.assign({ rpc:'', minLiq:1000, cur:'GBP' }, store.get('settings', {}));
+settings.rpc = String(settings.rpc || '').replace(/[\s\u00A0\u200B-\u200D\u2060\uFEFF"'`]/g, '');
 let rates    = store.get('rates', { USD:1 });
 let snap     = store.get('snap', null); // {ts, holdings[], walletVals{}, hiddenCount, hiddenValue}
 
@@ -121,6 +122,18 @@ function short(a){ return a.slice(0,4)+'…'+a.slice(-4); }
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function say(t, bad){ $('msg').textContent = t || ''; $('msg').className = 'msg' + (bad ? ' err' : ''); }
 
+function cleanAddr(s){ return String(s || '').replace(/[\s\u00A0\u200B-\u200D\u2060\uFEFF"'`]/g, ''); }
+function b58len(s){
+  const A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const bytes=[];
+  for (const ch of s){
+    let c=A.indexOf(ch); if (c<0) return -1;
+    for (let j=0;j<bytes.length;j++){ c+=bytes[j]*58; bytes[j]=c&255; c>>=8; }
+    while (c>0){ bytes.push(c&255); c>>=8; }
+  }
+  for (const ch of s){ if (ch==='1') bytes.push(0); else break; }
+  return bytes.length;
+}
 const PUBLIC_RPCS = ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'];
 let lastRpcErr = '';
 async function rpc(method, params){
@@ -135,7 +148,10 @@ async function rpc(method, params){
       if (!r.ok){ lastRpcErr = 'HTTP ' + r.status + ' from ' + new URL(url).host; continue; }
       let j;
       try { j = await r.json(); } catch(e){ lastRpcErr = 'bad response from ' + new URL(url).host; continue; }
-      if (j.error){ lastRpcErr = j.error.message + ' (' + new URL(url).host + ')'; continue; }
+      if (j.error){
+        if (/invalid param|wrongsize/i.test(j.error.message)) throw new Error(j.error.message + ' (check the wallet address)');
+        lastRpcErr = j.error.message + ' (' + new URL(url).host + ')'; continue;
+      }
       return j.result;
     }
     await sleep(1000 * (round + 1));
@@ -144,6 +160,7 @@ async function rpc(method, params){
 }
 
 async function scanWallet(addr){
+  if (b58len(addr) !== 32) throw new Error('not a valid Solana address, remove it in the Wallets tab');
   const out = {}; // mint -> amount
   const bal = await rpc('getBalance', [addr]);
   out[SOL] = bal.value / 1e9;
@@ -271,7 +288,7 @@ function render(){
   $('walletList').innerHTML = wallets.length ? wallets.map((w,i) => {
     const v = snap && snap.walletVals && snap.walletVals[w.address];
     return `<div class="row"><div><div class="sym">${esc(w.label || 'Wallet '+(i+1))}</div>
-      <div class="small">${short(w.address)}</div></div>
+      <div class="small">${short(w.address)}${b58len(w.address)!==32?' <span class="err">⚠ invalid address</span>':''}</div></div>
       <div class="right">${v!=null?money(v):''}<button class="x" data-i="${i}">✕</button></div></div>`;
   }).join('') : '<div class="row small">No wallets yet.</div>';
   document.querySelectorAll('.x').forEach(b => b.onclick = () => {
@@ -290,10 +307,15 @@ $('addBtn').onclick = () => {
   const lines = $('newWallets').value.split('\n').map(l => l.trim()).filter(Boolean);
   let added = 0;
   for (const l of lines){
-    const parts = l.split(/[,\t]/).map(s => s.trim());
-    const addr = parts[parts.length-1];
-    const label = parts.length > 1 ? parts[0] : '';
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) continue;
+    const parts = l.split(/[,\t]/);
+    let addr = cleanAddr(parts[parts.length-1]);
+    let label = parts.length > 1 ? parts.slice(0,-1).join(' ').trim() : '';
+    if (b58len(addr) !== 32 && parts.length === 1){
+      const toks = l.trim().split(/\s+/);
+      const last = cleanAddr(toks[toks.length-1]);
+      if (toks.length > 1 && b58len(last) === 32){ addr = last; label = toks.slice(0,-1).join(' '); }
+    }
+    if (b58len(addr) !== 32) continue;
     if (wallets.some(w => w.address === addr)) continue;
     wallets.push({ label, address:addr }); added++;
   }
@@ -304,7 +326,8 @@ $('addBtn').onclick = () => {
 };
 
 $('saveSet').onclick = () => {
-  settings.rpc = $('rpc').value.trim();
+  settings.rpc = $('rpc').value.replace(/[\s\u00A0\u200B-\u200D\u2060\uFEFF"'`]/g, '');
+  $('rpc').value = settings.rpc;
   settings.minLiq = Number($('minLiq').value) || 0;
   store.set('settings', settings);
   say('Saved. Refresh to apply.');
