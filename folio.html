@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Folio">
+<meta name="theme-color" content="#0b0d12">
+<title>Folio</title>
+<style>
+:root{--bg:#0b0d12;--card:#141821;--line:#222836;--text:#eef1f7;--muted:#8a93a6;--green:#35d07f;--red:#ff5c6c;--accent:#7c8cff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
+body{padding:env(safe-area-inset-top) 16px calc(90px + env(safe-area-inset-bottom))}
+h1{font-size:15px;font-weight:600;color:var(--muted);margin:18px 0 4px;letter-spacing:.04em;text-transform:uppercase}
+.total{font-size:40px;font-weight:700;letter-spacing:-.02em;margin:0}
+.sub{color:var(--muted);font-size:13px;margin-top:4px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.card{background:var(--card);border-radius:16px;padding:4px 16px;margin-top:16px}
+.card.pad{padding:16px}
+.sym{font-weight:600}
+.small{font-size:12px;color:var(--muted)}
+.right{text-align:right}
+.up{color:var(--green)}.down{color:var(--red)}
+button,select,input,textarea{font:inherit;color:var(--text);background:#0f121a;border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+textarea{width:100%;min-height:90px;resize:vertical}
+input{width:100%}
+button{background:var(--accent);border:0;color:#fff;font-weight:600}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+button.x{background:transparent;border:0;color:var(--muted);padding:6px 10px}
+label{display:block;font-size:12px;color:var(--muted);margin:12px 0 6px}
+.bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(11,13,18,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
+.bar button{flex:1}
+.tabs{display:flex;gap:8px;margin-top:14px}
+.tabs button{flex:1;background:var(--card);color:var(--muted)}
+.tabs button.on{background:var(--accent);color:#fff}
+.hide{display:none}
+.msg{color:var(--muted);font-size:13px;margin-top:10px;min-height:18px}
+.err{color:var(--red)}
+.pill{display:inline-block;font-size:11px;padding:2px 7px;border-radius:99px;background:#1d2330;color:var(--muted);margin-left:6px}
+</style>
+</head>
+<body>
+
+<div id="topbar" style="display:flex;justify-content:space-between;align-items:center">
+  <h1>Total balance</h1>
+  <select id="cur"></select>
+</div>
+<p class="total" id="total">–</p>
+<div class="sub" id="sub">Add a wallet to get started</div>
+<div class="msg" id="msg"></div>
+
+<div class="tabs">
+  <button id="t-hold" class="on">Holdings</button>
+  <button id="t-wal">Wallets</button>
+  <button id="t-set">Settings</button>
+</div>
+
+<section id="v-hold">
+  <div class="card" id="holdings"></div>
+  <div class="sub" id="hiddenNote" style="margin-top:12px"></div>
+</section>
+
+<section id="v-wal" class="hide">
+  <div class="card pad">
+    <label>Add wallets (one per line, optional label: <code>label, address</code>)</label>
+    <textarea id="newWallets" placeholder="Main, 7xKX...&#10;9aBc..."></textarea>
+    <div style="margin-top:10px"><button id="addBtn">Add</button></div>
+  </div>
+  <div class="card" id="walletList"></div>
+</section>
+
+<section id="v-set" class="hide">
+  <div class="card pad">
+    <label>Solana RPC URL (optional — paste a free Helius URL if you hit rate limits)</label>
+    <input id="rpc" placeholder="https://api.mainnet-beta.solana.com" autocapitalize="off" autocorrect="off">
+    <label>Hide tokens with liquidity below (USD)</label>
+    <input id="minLiq" type="number" inputmode="decimal" placeholder="1000">
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button id="saveSet">Save</button>
+      <button class="ghost" id="clearAll">Clear all data</button>
+    </div>
+    <div class="small" style="margin-top:12px">Everything is stored only in this browser on your device. Addresses are public, and no private keys are ever needed.</div>
+  </div>
+</section>
+
+<div class="bar"><button id="refresh">Refresh</button></div>
+
+<script>
+const SOL = 'So11111111111111111111111111111111111111112';
+const PROGS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EcfpGLDdeMnEVEQSBUFcc'];
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+};
+
+let wallets  = store.get('wallets', []);
+let settings = Object.assign({ rpc:'', minLiq:1000, cur:'GBP' }, store.get('settings', {}));
+let rates    = store.get('rates', { USD:1 });
+let snap     = store.get('snap', null); // {ts, holdings[], walletVals{}, hiddenCount, hiddenValue}
+
+function money(usd){
+  const c = rates[settings.cur] ? settings.cur : 'USD', v = usd * (rates[c] || 1);
+  try { return new Intl.NumberFormat(undefined,{style:'currency',currency:c,maximumFractionDigits: v<1?6:2}).format(v); }
+  catch(e){ return v.toFixed(2)+' '+c; }
+}
+function price(usd){
+  const c = rates[settings.cur] ? settings.cur : 'USD', v = usd * (rates[c] || 1);
+  const d = v>=1?2 : v>=0.01?4 : 8;
+  try { return new Intl.NumberFormat(undefined,{style:'currency',currency:c,minimumFractionDigits:2,maximumFractionDigits:d}).format(v); }
+  catch(e){ return v.toPrecision(4)+' '+c; }
+}
+function num(n){ return n>=1000 ? n.toLocaleString(undefined,{maximumFractionDigits:0}) : n.toLocaleString(undefined,{maximumFractionDigits:4}); }
+function short(a){ return a.slice(0,4)+'…'+a.slice(-4); }
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function say(t, bad){ $('msg').textContent = t || ''; $('msg').className = 'msg' + (bad ? ' err' : ''); }
+
+const PUBLIC_RPCS = ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'];
+let lastRpcErr = '';
+async function rpc(method, params){
+  const urls = settings.rpc ? [settings.rpc] : PUBLIC_RPCS;
+  for (let round = 0; round < 3; round++){
+    for (const url of urls){
+      let r;
+      try {
+        r = await fetch(url, { method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ jsonrpc:'2.0', id:1, method, params }) });
+      } catch(e){ lastRpcErr = 'network/CORS blocked (' + new URL(url).host + ')'; continue; }
+      if (!r.ok){ lastRpcErr = 'HTTP ' + r.status + ' from ' + new URL(url).host; continue; }
+      let j;
+      try { j = await r.json(); } catch(e){ lastRpcErr = 'bad response from ' + new URL(url).host; continue; }
+      if (j.error){ lastRpcErr = j.error.message + ' (' + new URL(url).host + ')'; continue; }
+      return j.result;
+    }
+    await sleep(1000 * (round + 1));
+  }
+  throw new Error('RPC failed: ' + lastRpcErr + '. Add a free Helius URL in Settings.');
+}
+
+async function scanWallet(addr){
+  const out = {}; // mint -> amount
+  const bal = await rpc('getBalance', [addr]);
+  out[SOL] = bal.value / 1e9;
+  for (const p of PROGS){
+    await sleep(150);
+    const res = await rpc('getTokenAccountsByOwner', [addr, { programId:p }, { encoding:'jsonParsed' }]);
+    for (const a of res.value){
+      const info = a.account.data.parsed.info;
+      const amt = parseFloat(info.tokenAmount.uiAmountString || '0');
+      if (amt > 0) out[info.mint] = (out[info.mint] || 0) + amt;
+    }
+  }
+  return out;
+}
+
+async function fetchPrices(mints){
+  const best = {};
+  for (let i = 0; i < mints.length; i += 30){
+    const chunk = mints.slice(i, i + 30);
+    try {
+      const r = await fetch('https://api.dexscreener.com/tokens/v1/solana/' + chunk.join(','));
+      if (!r.ok) continue;
+      const pairs = await r.json();
+      for (const p of pairs){
+        const m = p.baseToken && p.baseToken.address;
+        if (!m || !chunk.includes(m)) continue;
+        const liq = (p.liquidity && p.liquidity.usd) || 0;
+        if (!best[m] || liq > best[m].liq){
+          best[m] = { price: parseFloat(p.priceUsd || '0'), liq, sym: p.baseToken.symbol, name: p.baseToken.name,
+                      change: p.priceChange ? p.priceChange.h24 : null };
+        }
+      }
+    } catch(e){}
+    await sleep(250);
+  }
+  return best;
+}
+
+async function fetchRates(){
+  try {
+    const r = await fetch('https://api.frankfurter.dev/v1/latest?base=USD');
+    if (!r.ok) return;
+    const j = await r.json();
+    rates = Object.assign({ USD:1 }, j.rates);
+    store.set('rates', rates);
+    fillCurrencies();
+  } catch(e){}
+}
+
+let busy = false;
+async function refresh(){
+  if (busy) return;
+  if (!wallets.length){ say('Add a wallet first.'); return; }
+  busy = true; $('refresh').disabled = true;
+  try {
+    say('Fetching rates…');
+    await fetchRates();
+    const byMint = {}; const perWallet = {};
+    for (let i = 0; i < wallets.length; i++){
+      const w = wallets[i];
+      say(`Scanning wallet ${i+1}/${wallets.length}…`);
+      try {
+        const h = await scanWallet(w.address);
+        perWallet[w.address] = h;
+        for (const m in h) byMint[m] = (byMint[m] || 0) + h[m];
+      } catch(e){ say(`Wallet ${w.label || short(w.address)}: ${e.message}`, true); await sleep(1500); }
+      await sleep(200);
+    }
+    say('Fetching prices…');
+    const prices = await fetchPrices(Object.keys(byMint));
+    const minLiq = Number(settings.minLiq) || 0;
+    const holdings = []; let hiddenCount = 0, hiddenValue = 0;
+    for (const m in byMint){
+      const p = prices[m];
+      const isSol = m === SOL;
+      const value = p ? p.price * byMint[m] : 0;
+      if (!p || (!isSol && p.liq < minLiq)){ hiddenCount++; hiddenValue += value; continue; }
+      holdings.push({ mint:m, amount:byMint[m], price:p.price, value, liq:p.liq,
+                      sym:p.sym, name:p.name, change:p.change });
+    }
+    holdings.sort((a,b) => b.value - a.value);
+    const walletVals = {};
+    for (const addr in perWallet){
+      let t = 0;
+      for (const m in perWallet[addr]){
+        const p = prices[m];
+        if (p && (m === SOL || p.liq >= minLiq)) t += p.price * perWallet[addr][m];
+      }
+      walletVals[addr] = t;
+    }
+    snap = { ts: Date.now(), holdings, walletVals, hiddenCount, hiddenValue };
+    store.set('snap', snap);
+    say('');
+  } catch(e){ say(e.message, true); }
+  busy = false; $('refresh').disabled = false;
+  render();
+}
+
+function ago(ts){
+  const s = Math.round((Date.now() - ts)/1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.round(s/60) + 'm ago';
+  if (s < 86400) return Math.round(s/3600) + 'h ago';
+  return Math.round(s/86400) + 'd ago';
+}
+
+function render(){
+  if (snap){
+    const total = snap.holdings.reduce((s,h) => s + h.value, 0);
+    $('total').textContent = money(total);
+    $('sub').textContent = `${snap.holdings.length} tokens · ${wallets.length} wallets · updated ${ago(snap.ts)}`;
+    $('holdings').innerHTML = snap.holdings.length ? snap.holdings.map(h => {
+      const ch = h.change;
+      const chHtml = ch == null ? '' : `<span class="${ch>=0?'up':'down'}">${ch>=0?'+':''}${ch.toFixed(1)}%</span>`;
+      return `<div class="row">
+        <div><div class="sym">${esc(h.sym||'?')}</div><div class="small">${num(h.amount)} × ${price(h.price)}</div></div>
+        <div class="right"><div>${money(h.value)}</div><div class="small">${chHtml}</div></div></div>`;
+    }).join('') : '<div class="row small">Nothing to show yet.</div>';
+    $('hiddenNote').textContent = snap.hiddenCount
+      ? `${snap.hiddenCount} low-liquidity or unpriced tokens hidden (≈ ${money(snap.hiddenValue)} on paper, not counted).` : '';
+  } else {
+    $('total').textContent = '–';
+    $('holdings').innerHTML = '<div class="row small">Tap Refresh to load your portfolio.</div>';
+  }
+  $('walletList').innerHTML = wallets.length ? wallets.map((w,i) => {
+    const v = snap && snap.walletVals && snap.walletVals[w.address];
+    return `<div class="row"><div><div class="sym">${esc(w.label || 'Wallet '+(i+1))}</div>
+      <div class="small">${short(w.address)}</div></div>
+      <div class="right">${v!=null?money(v):''}<button class="x" data-i="${i}">✕</button></div></div>`;
+  }).join('') : '<div class="row small">No wallets yet.</div>';
+  document.querySelectorAll('.x').forEach(b => b.onclick = () => {
+    wallets.splice(+b.dataset.i, 1); store.set('wallets', wallets); render();
+  });
+}
+
+function fillCurrencies(){
+  const list = Object.keys(rates).sort();
+  if (!list.includes(settings.cur)) list.push(settings.cur);
+  $('cur').innerHTML = list.map(c => `<option ${c===settings.cur?'selected':''}>${c}</option>`).join('');
+}
+$('cur').onchange = e => { settings.cur = e.target.value; store.set('settings', settings); render(); };
+
+$('addBtn').onclick = () => {
+  const lines = $('newWallets').value.split('\n').map(l => l.trim()).filter(Boolean);
+  let added = 0;
+  for (const l of lines){
+    const parts = l.split(/[,\t]/).map(s => s.trim());
+    const addr = parts[parts.length-1];
+    const label = parts.length > 1 ? parts[0] : '';
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) continue;
+    if (wallets.some(w => w.address === addr)) continue;
+    wallets.push({ label, address:addr }); added++;
+  }
+  store.set('wallets', wallets);
+  $('newWallets').value = '';
+  say(added ? `Added ${added} wallet(s).` : 'No valid new Solana addresses found.', !added);
+  render();
+};
+
+$('saveSet').onclick = () => {
+  settings.rpc = $('rpc').value.trim();
+  settings.minLiq = Number($('minLiq').value) || 0;
+  store.set('settings', settings);
+  say('Saved. Refresh to apply.');
+};
+$('clearAll').onclick = () => {
+  if (!confirm('Delete all wallets and cached data?')) return;
+  try { localStorage.clear(); } catch(e){}
+  wallets = []; snap = null; settings = { rpc:'', minLiq:1000, cur:'GBP' }; rates = { USD:1 };
+  fillCurrencies(); render();
+};
+
+function tab(name){
+  for (const t of ['hold','wal','set']){
+    $('v-'+t).classList.toggle('hide', t !== name);
+    $('t-'+t).classList.toggle('on', t === name);
+  }
+}
+$('t-hold').onclick = () => tab('hold');
+$('t-wal').onclick  = () => tab('wal');
+$('t-set').onclick  = () => tab('set');
+$('refresh').onclick = refresh;
+
+$('rpc').value = settings.rpc;
+$('minLiq').value = settings.minLiq;
+fillCurrencies();
+render();
+if (wallets.length && (!snap || Date.now() - snap.ts > 5*60*1000)) refresh();
+</script>
+</body>
+</html>
